@@ -40,8 +40,8 @@ public:
 	Point			operator*(int n) const { return Point(x * n, y * n); }
 	Point			operator/(int n) const { return Point(x / n, y / n); }
 
-	bool			operator==(Point p) const { return x == p.x && y == p.y; }
-	bool			operator!=(Point p) const { return	!(*this == p); }
+	bool			operator==(const Point& p) const { return x == p.x && y == p.y; }
+	bool			operator!=(const Point& p) const { return	!(*this == p); }
 
 	Point			mid(const Point& b) const { return (*this + b)/ 2; }
 	friend Point	mid(const Point& a, const Point& b) { return a.mid(b); }
@@ -95,14 +95,14 @@ struct Vect
 	int x;
 	int y;
 
-	Vect			operator+(Vect v) const { return Vect(x + v.x, y + v.y); }
-	Vect			operator-(Vect v) const { return Vect(x - v.x, y - v.y); }
+	Vect			operator+(const Vect& v) const { return Vect(x + v.x, y + v.y); }
+	Vect			operator-(const Vect& v) const { return Vect(x - v.x, y - v.y); }
 	Vect			operator-() const { return Vect(-x, -y); }
 	Vect			operator*(int n) const { return Vect(x * n, y * n); }
 	Vect			operator/(int n) const { return Vect(x / n, y / n); }
 
-	bool			operator==(Vect v) const { return x == v.x && y == v.y; }
-	bool			operator!=(Vect v) const { return	!(*this == v); }
+	bool			operator==(const Vect& v) const { return x == v.x && y == v.y; }
+	bool			operator!=(const Vect& v) const { return	!(*this == v); }
 
 	double			dir() const { return atan2(y, x); } //	Direction of a vector [-Pi, Pi]
 	friend double	dir(const Vect& v) { return v.dir(); }
@@ -320,7 +320,6 @@ int	main()
 
 		auto monsterit = baseview.begin();
 
-		Point p(5000, 5000);
 		for (int i = 0; i < heroes_per_player; i++)
 		{
 			// DO YOUR CODE ! :-)
