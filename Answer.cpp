@@ -1,11 +1,13 @@
 #include <algorithm>
 #include <cmath>
 #include <ctime>
+#include <initializer_list>
 #include <iostream>
-#include <map>
 #include <memory>
 #include <string>
 #include <vector>
+#include <map>
+#include <set>
 
 #define X_MAX 17630
 #define Y_MAX 9000
@@ -80,8 +82,8 @@ static const Point	P_MID(X_MAX / 2, Y_MAX / 2);
 struct Vect
 {
 	Vect() : x(), y() {}
-	explicit Vect(int x, int y) : x(x), y(y) {}		// BE CAREFUL TO CALL THE RIGHT CONSTRUCTOR (int, int) or (int, double)
-	Vect(int norm, double dir) : x(norm*cos(dir)), y(norm*sin(dir)) { cerr << dir << endl; }	//	dir is in radians, call to_rad(double) to use degrees.
+	Vect(int x, int y) : x(x), y(y) {}		// BE CAREFUL TO CALL THE RIGHT CONSTRUCTOR (int, int) or (int, double)
+	Vect(int norm, double dir) : x(norm*cos(dir)), y(norm*sin(dir)) {}	//	dir is in radians, call to_rad(double) to use degrees.
 	Vect(const Point& origin, const Point& dest) : x(dest.x-origin.x), y(dest.y-origin.y) {}
 	Vect(const Vect& instance) : x(instance.x), y(instance.y) {}
 
@@ -160,56 +162,31 @@ Point			operator+(const Point& p, const Vect& v) { return Point(p.x+v.x, p.y+v.y
 
 struct Player
 {
-	const int	health() const { return _health; }
-	const int	mana() const { return _mana; }
-
-private:
-	int _health; // Each player's base health
-	int _mana;   // Ignore in the first league; Spend ten mana to cast a spell
+	int health; // Each player's base health
+	int mana;   // Ignore in the first league; Spend ten mana to cast a spell
 
 	friend istream& operator>>(istream& in, Player& rhs)
 	{
-		in >> rhs._health >> rhs._mana;
+		in >> rhs.health >> rhs.mana;
 		return in;
 	}
 };
 
 struct Base
 {
-	const Point&	xy() const { return _xy; }
-	const Point&	adv() const { return _adv; }
-
-private:
-	Point _xy;
-	Point _adv;
+	Point xy;
+	Point adv;
 
 	friend istream& operator>>(istream& in, Base& rhs)
 	{
-		in >> rhs._xy;
-		rhs._adv = P_MAX - rhs._xy;
+		in >> rhs.xy;
+		rhs.adv = P_MAX - rhs.xy;
 		return in;
 	}
 };
 
 struct Entity
 {
-	Entity() {}
-	Entity(const Entity& instance) { *this = instance; }
-	Entity&	operator=(const Entity& rhs)
-	{
-		id = rhs.id;
-		type = rhs.type;
-		xy = rhs.xy;
-		shield_life = rhs.shield_life;
-		is_controlled = rhs.is_controlled;
-		health = rhs.health;
-		vxy = rhs.vxy;
-		near_base = rhs.near_base;
-		base_dist = rhs.base_dist;
-		adv_dist = rhs.adv_dist;
-		return *this;
-	}
-
 	int id;				// Unique identifier
 	int type;			// 0=monster, 1=your hero, 2=opponent hero
 	Point xy;			// Position point of this entity
@@ -220,8 +197,8 @@ struct Entity
 	int near_base;		// 0=monster with no target yet, 1=monster targeting a base
 	int threat_for;		// Given this monster's trajectory, is it a threat to 1=your base, 2=your opponent's base, 0=neither
 	int base_dist;		// Distance to base.
-	int adv_dist;		// Distance to adverse base.
-	int	hero_dist[3];	// Distance to each hero.
+//	int adv_dist;		// Distance to adverse base.
+//	int	hero_dist[3];	// Distance to each hero.
 
 	friend istream& operator>>(istream& in, Entity& rhs)
 	{
@@ -231,26 +208,216 @@ struct Entity
 	}
 };
 
+static const std::map<std::string, int Entity::*> EntityIntMembers = {
+	{"id", &Entity::id},
+	{"type", &Entity::type},
+	{"shield_life", &Entity::shield_life},
+	{"is_controlled", &Entity::is_controlled},
+	{"health", &Entity::health},
+	{"near_base", &Entity::near_base},
+	{"threat_for", &Entity::threat_for},
+//	{"base_dist", &Entity::base_dist},
+//	{"adv_dist", &Entity::adv_dist}
+};
+
+class EntityCompare		// Gereric virtual binary predicate on entities or pointer on entities.
+{
+public:
+	virtual bool	operator()(const Entity& a, const Entity& b) const final { return compared_value(a) < compared_value(b); };
+	virtual	bool	operator()(const Entity* a, const Entity* b) const final { return compared_value(*a) < compared_value(*b); };
+	virtual	int		compared_value(const Entity& e) const { return e.id; }
+};
+
+class EntityMemberCompare : public EntityCompare	// Binary predicate comparing int members of two entities.
+{
+public:
+	EntityMemberCompare(const std::string& member) {
+		auto f = EntityIntMembers.find(member);
+		if (f != EntityIntMembers.end())
+			_ptr_m = f->second;
+		else
+			_ptr_m = &Entity::id;
+	}
+	virtual	int		compared_value(const Entity& e) const { return e.*_ptr_m; }
+private:
+	int Entity::* _ptr_m;
+};
+
+class EntityDistCompare : public EntityCompare		// Binary predicate comparing entities distance to a given reference point.
+{
+public:
+	EntityDistCompare(const Point& ref_point) : p(ref_point) {}
+	EntityDistCompare(Point&& ref_point) : p(std::move(ref_point)) {}
+	virtual	int		compared_value(const Entity& e) const { return e.xy.dist(p); }
+private:
+	const Point p;
+};
+
+class EntityAngleCompare : public EntityCompare		// Binary predicate comparing entities direction vector angle to a to a given reference vector.
+{
+public:
+	EntityAngleCompare(const Vect& ref_vect) : v(ref_vect) {}
+	EntityAngleCompare(Vect&& ref_vect) : v(std::move(ref_vect)) {}
+	virtual	int		compared_value(const Entity& e) const { return e.vxy.angle(v); }
+private:
+	const Vect v;
+};
+
+class EntitySelect		// Gereric virtual unary predicate on entities or pointer on entities.
+{
+public:
+	EntitySelect(int max) : _mode(0), _max(max) {}
+	EntitySelect(int min, int max) : _mode(1), _min(min), _max(max) {}
+	EntitySelect(const std::initializer_list<int>& values) : _mode(2), _values(values) {}
+	EntitySelect(std::initializer_list<int>&& values) : _mode(2), _values(std::move(values)) {}
+	virtual	int		selected_value(const Entity& e) const = 0;
+
+	virtual bool	operator()(const Entity* e) const final { return (*this)(*e); }
+	virtual bool	operator()(const Entity& e) const final
+	{
+		switch(_mode)
+		{
+			case 0:		return selected_value(e) <= _max;
+			case 1:		return _min <= selected_value(e) && selected_value(e) <= _max;
+			case 2:		return std::find(_values.begin(), _values.end(), selected_value(e)) != _values.end();
+			default:	return false;
+		}
+	}
+private:
+	int							_mode;
+	std::initializer_list<int>	_values;
+	int 						_min;
+	int 						_max;
+};
+
+class EntityMemberSelect : public EntitySelect		// Unnary predicate selecting entities on a member value.
+{
+public:
+	EntityMemberSelect(const std::string& member, int max) : _ptr_m(_init_ptr(member)), EntitySelect(max) {}
+	EntityMemberSelect(const std::string& member, int min, int max) : _ptr_m(_init_ptr(member)), EntitySelect(min, max) {}
+	EntityMemberSelect(const std::string& member, const std::initializer_list<int>& values) : _ptr_m(_init_ptr(member)), EntitySelect(values) {}
+	EntityMemberSelect(const std::string& member, std::initializer_list<int>&& values) : _ptr_m(_init_ptr(member)), EntitySelect(std::move(values)) {}
+	virtual	int				selected_value(const Entity& e) const { return e.*_ptr_m; }
+private:
+	static int Entity::*	_init_ptr(const std::string& member)
+	{
+		auto f = EntityIntMembers.find(member);
+		if (f != EntityIntMembers.end())
+			return f->second;
+		else
+			return &Entity::id;
+	}
+	int Entity::*			_ptr_m;
+};
+
+class EntityDistSelect : public EntitySelect		// Unnary predicate selecting entities on a distance to a given reference point.
+{
+public:
+	EntityDistSelect(const Point& ref_point, int max) : _ref(ref_point), EntitySelect(max) {}
+	EntityDistSelect(const Point& ref_point, int min, int max) : _ref(ref_point), EntitySelect(min, max) {}
+	EntityDistSelect(const Point& ref_point, const std::initializer_list<int>& values) : _ref(ref_point), EntitySelect(values) {}
+	EntityDistSelect(const Point& ref_point, std::initializer_list<int>&& values) : _ref(ref_point), EntitySelect(std::move(values)) {}
+	EntityDistSelect(Point&& ref_point, int max) : _ref(std::move(ref_point)), EntitySelect(max) {}
+	EntityDistSelect(Point&& ref_point, int min, int max) : _ref(std::move(ref_point)), EntitySelect(min, max) {}
+	EntityDistSelect(Point&& ref_point, const std::initializer_list<int>& values) : _ref(std::move(ref_point)), EntitySelect(values) {}
+	EntityDistSelect(Point&& ref_point, std::initializer_list<int>&& values) : _ref(std::move(ref_point)), EntitySelect(std::move(values)) {}
+	virtual	int				selected_value(const Entity& e) const { return e.xy.dist(_ref); }
+private:
+	const Point				_ref;
+};
+
+class EntityAngleSelect : public EntitySelect		// Unnary predicate selecting entities on an angle to a given reference vector.
+{
+public:
+	EntityAngleSelect(const Vect& ref_vect, int max) : _ref(ref_vect), EntitySelect(max) {}
+	EntityAngleSelect(const Vect& ref_vect, int min, int max) : _ref(ref_vect), EntitySelect(min, max) {}
+	EntityAngleSelect(const Vect& ref_vect, const std::initializer_list<int>& values) : _ref(ref_vect), EntitySelect(values) {}
+	EntityAngleSelect(const Vect& ref_vect, std::initializer_list<int>&& values) : _ref(ref_vect), EntitySelect(std::move(values)) {}
+	EntityAngleSelect(Vect&& ref_vect, int max) : _ref(std::move(ref_vect)), EntitySelect(max) {}
+	EntityAngleSelect(Vect&& ref_vect, int min, int max) : _ref(std::move(ref_vect)), EntitySelect(min, max) {}
+	EntityAngleSelect(Vect&& ref_vect, const std::initializer_list<int>& values) : _ref(std::move(ref_vect)), EntitySelect(values) {}
+	EntityAngleSelect(Vect&& ref_vect, std::initializer_list<int>&& values) : _ref(std::move(ref_vect)), EntitySelect(std::move(values)) {}
+	virtual	int				selected_value(const Entity& e) const { return e.vxy.angle(_ref); }
+private:
+	const Vect				_ref;
+};
+
+//	Utility class for remapping entities pointer including sorting and selection.
+class Remap
+{
+public:
+	typedef multiset<Entity*, EntityCompare>		EntitySet;
+
+	template<typename... Containers>
+	static EntitySet	create_set(const EntityCompare& cmp, Containers&... src_containers)
+	{
+		EntitySet	set(cmp);
+		add_to_set(set, src_containers...);
+		return set;
+	}
+	template<typename... Containers>
+	static EntitySet	create_set(const EntityCompare& cmp, const EntitySelect& sel, Containers&... src_containers)
+	{
+		EntitySet	set(cmp);
+		add_to_set(set, sel, src_containers...);
+		return set;
+	}
+	template<typename... Containers>
+	static void add_to_set(EntitySet& set, Containers&... src_containers)
+	{
+		(void)std::initializer_list<int>{(_int_add_to_set(set, src_containers), 0)...};
+	}
+	template<typename... Containers>
+	static void add_to_set(EntitySet& set, const EntitySelect& sel, Containers&... src_containers)
+	{
+		(void)std::initializer_list<int>{(_int_add_to_set(set, sel, src_containers), 0)...};
+	}
+	static int	compared_value(const EntitySet& set, const Entity& e) { return set.key_comp().compared_value(e); }
+	static int	compared_value(const EntitySet& set, const EntitySet::iterator& it) { return set.key_comp().compared_value(**it); }
+private:
+	template<typename Container>
+	static void _int_add_to_set(EntitySet& set, Container& src_container)
+	{
+		for (auto it = src_container.begin(); it != src_container.end(); ++it)
+			set.insert(_get_entity_ptr(it));
+	}
+	template<typename Container>
+	static void _int_add_to_set(EntitySet& set, const EntitySelect& sel, Container& src_container)
+	{
+		for (auto it = src_container.begin(); it != src_container.end(); ++it)
+		{
+			Entity* ptr = _get_entity_ptr(it);
+			if (sel(ptr))
+				set.insert(ptr);
+		}
+	}
+	template<typename T, typename... Args>
+	static bool		_and(T first, Args... rest) { return first && _and(rest...); }
+	static bool		_and(bool single) { return single; }
+	static Entity*	_get_entity_ptr(const std::vector<Entity>::iterator& it) { return &*it; }
+	static Entity*	_get_entity_ptr(const std::multiset<Entity*>::iterator& it) { return *it; }
+};
+
 int	main()
 {
 	Player	me;
 	Player	adv;
 
 	Base	base;
-	const int&	base_x = base.xy().x;
-	const int&	base_y = base.xy().y;
+	const int&	base_x = base.xy.x;
+	const int&	base_y = base.xy.y;
 	cin >> base; cin.ignore();
 
 	int		heroes_per_player;
 	cin >> heroes_per_player; cin.ignore();
 
-	vector<Entity>						heroes(3);
-	vector<Entity>						enemies(3);
-	vector<Entity>						monsters;
-	monsters.reserve(300);
-
-	multimap<int, Entity*>				baseview;
-//	vector<multimap<int, Entity*> >		heroviews(3);	// DEACTIVATED, TOO RESSOURCE CONSUMING
+	//	Create and pre-allocates entities storage vectors.
+	vector<Entity>	heroes;
+	vector<Entity>	enemies;
+	vector<Entity>	monsters;
+	heroes.reserve(3);
+	enemies.reserve(3);
+	monsters.reserve(100);
 
 	clock_t clk_loop_start;
 
@@ -259,76 +426,56 @@ int	main()
 	{
 		clk_loop_start = clock();
 
+		//	Clear all entities before reparse.
+		heroes.clear();
+		enemies.clear();
 		monsters.clear();
-		baseview.clear();
-/*		heroviews[0].clear();	// DEACTIVATED, TOO RESSOURCE CONSUMING
-		heroviews[1].clear();
-		heroviews[2].clear();*/
 
 		cin >> me; cin.ignore();
 		cin >> adv;	cin.ignore();
 
-		const int	health = me.health();
-		const int	mana = me.mana();
+		const int	health = me.health;
+		const int	mana = me.mana;
 
 		int entity_count; // Amount of heros and monster you can see
 		cin >> entity_count; cin.ignore();
 
 		cerr << "Entity count : " << entity_count << endl;
 
+		monsters.reserve(entity_count - 3);
+
 		for (int i = 0; i < entity_count; i++)
 		{
 			Entity tmp;
 			cin >> tmp; cin.ignore();
-
-			tmp.base_dist = base.xy().dist(tmp.xy);
-			tmp.adv_dist = base.adv().dist(tmp.xy);
-			for (int i = 0; i < heroes_per_player; i++)
-				if (tmp.id != heroes[i].id)
-					tmp.hero_dist[i] = heroes[i].xy.dist(tmp.xy);
-				else
-					tmp.hero_dist[i] = 0;
-
-			switch (tmp.type)
+			switch(tmp.type)
 			{
-			case 0: 	//	Monsters
-				{
-					//	Store into monster vector.
-					monsters.push_back(tmp);
-
-					//	Stores the pointer into useful map tables.
-					Entity*	ptr = &monsters.back();
-
-					//	monsters sorted by distance view from base.
-					if (ptr->base_dist < 10000)
-						baseview.insert(make_pair(ptr->base_dist, ptr));
-
-					//	monsters at distance view from each hero.		// DEACTIVATED, TOO RESSOURCE CONSUMING
-					/*for (int i = 0; i < heroes.size(); i++)
-						if (ptr->hero_dist[i] < 2200)
-							heroviews[i].insert(make_pair(ptr->hero_dist[i], ptr));*/
-				}
-				break;
-			case 1:		//	Heroes
-				heroes.push_back(tmp);
-				break;
-			case 2:		//	Enemies
-				enemies.push_back(tmp);
-				break;
+				case 2:	enemies.push_back(std::move(tmp)); break;
+				case 1:	heroes.push_back(std::move(tmp)); break;
+				case 0:	monsters.push_back(std::move(tmp)); break;
 			}
 		}
 
-		auto monsterit = baseview.begin();
+		//	Set of monsters and enemies with a distance to base under 10000, and sorted by distance to the base.
+		Remap::EntitySet	baseview(Remap::create_set(EntityDistCompare(base.xy), EntityDistSelect(base.xy, 10000), monsters, enemies));
 
-		for (int i = 0; i < heroes_per_player; i++)
+		//	Viewport of each hero
+		vector<Remap::EntitySet>	heroviews;
+		for (int i = 0; i < heroes.size(); ++i)
+			heroviews.push_back(Remap::create_set(EntityDistCompare(heroes[i].xy), EntityDistSelect(heroes[i].xy, 2200), monsters, enemies));
+
+		auto base_it = baseview.begin();
+
+		for (int i = 0; i < heroes_per_player; ++i)
 		{
 			// DO YOUR CODE ! :-)
-
-			if (monsterit != baseview.end())
+			while (base_it != baseview.end() && (*base_it)->type == 1)
+				++base_it;
+			if (base_it != baseview.end())
 			{
-				Point p = monsterit->second->xy + monsterit->second->vxy;
-				cout << "MOVE " << p << " kill " << monsterit->second->id << endl;
-				++monsterit;
+				Point p = (*base_it)->xy + (*base_it)->vxy;
+				cout << "MOVE " << p << " kill " << (*base_it)->id << endl;
+				++base_it;
 			}
 			else
 			{
