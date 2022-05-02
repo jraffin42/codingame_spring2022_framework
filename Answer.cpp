@@ -122,6 +122,8 @@ struct Vect
 		return std::sqrt(dx * dx + dy * dy);
 	}
 	friend double	norm(const Vect& v) { return v.norm(); }
+	Vect			normalize() const { return Vect(100, dir()); }
+	friend Vect		normalize(const Vect& v) { return v.normalize(); }
 
 	// Scalar product (is > 0 if angle > 90 degrees)
 	int				scal_prod(const Vect& v) const { return x * v.x + y * v.y; }
@@ -176,6 +178,15 @@ struct Base
 {
 	Point xy;
 	Point adv;
+	std::vector<Point> posts;
+
+	Point get_post(int i)
+	{
+		posts.resize(3);
+		if (xy.x)
+			return adv-posts[i];
+		return posts[i];
+	}
 
 	friend istream& operator>>(istream& in, Base& rhs)
 	{
@@ -194,16 +205,17 @@ struct Entity
 	int is_controlled;	// Equals 1 when this entity is under a control spell
 	int health;			// Remaining health of this monster
 	Vect vxy;			// Trajectory vector of this monster
+	Point dst;			// Destination point for next turn
 	int near_base;		// 0=monster with no target yet, 1=monster targeting a base
 	int threat_for;		// Given this monster's trajectory, is it a threat to 1=your base, 2=your opponent's base, 0=neither
-	int base_dist;		// Distance to base.
-//	int adv_dist;		// Distance to adverse base.
-//	int	hero_dist[3];	// Distance to each hero.
+
+	void	displace(const Vect& v) { xy = xy+v; dst = dst+v; }
 
 	friend istream& operator>>(istream& in, Entity& rhs)
 	{
 		in >> rhs.id >> rhs.type >> rhs.xy.x >> rhs.xy.y >> rhs.shield_life >> rhs.is_controlled;
 		in >> rhs.health >> rhs.vxy.x >> rhs.vxy.y >> rhs.near_base >> rhs.threat_for;
+		rhs.dst = rhs.xy + rhs.vxy;
 		return in;
 	}
 };
@@ -215,9 +227,7 @@ static const std::map<std::string, int Entity::*> EntityIntMembers = {
 	{"is_controlled", &Entity::is_controlled},
 	{"health", &Entity::health},
 	{"near_base", &Entity::near_base},
-	{"threat_for", &Entity::threat_for},
-//	{"base_dist", &Entity::base_dist},
-//	{"adv_dist", &Entity::adv_dist}
+	{"threat_for", &Entity::threat_for}
 };
 
 class EntityCompare		// Gereric virtual binary predicate on entities or pointer on entities.
@@ -249,6 +259,16 @@ public:
 	EntityDistCompare(const Point& ref_point) : p(ref_point) {}
 	EntityDistCompare(Point&& ref_point) : p(std::move(ref_point)) {}
 	virtual	int		compared_value(const Entity& e) const { return e.xy.dist(p); }
+private:
+	const Point p;
+};
+
+class EntityDestCompare : public EntityCompare		// Binary predicate comparing entities distance to a given reference point.
+{
+public:
+	EntityDestCompare(const Point& ref_point) : p(ref_point) {}
+	EntityDestCompare(Point&& ref_point) : p(std::move(ref_point)) {}
+	virtual	int		compared_value(const Entity& e) const { return e.dst.dist(p); }
 private:
 	const Point p;
 };
@@ -326,6 +346,22 @@ private:
 	const Point				_ref;
 };
 
+class EntityDestSelect : public EntitySelect		// Unnary predicate selecting entities on a distance to a given reference point.
+{
+public:
+	EntityDestSelect(const Point& ref_point, int max) : _ref(ref_point), EntitySelect(max) {}
+	EntityDestSelect(const Point& ref_point, int min, int max) : _ref(ref_point), EntitySelect(min, max) {}
+	EntityDestSelect(const Point& ref_point, const std::initializer_list<int>& values) : _ref(ref_point), EntitySelect(values) {}
+	EntityDestSelect(const Point& ref_point, std::initializer_list<int>&& values) : _ref(ref_point), EntitySelect(std::move(values)) {}
+	EntityDestSelect(Point&& ref_point, int max) : _ref(std::move(ref_point)), EntitySelect(max) {}
+	EntityDestSelect(Point&& ref_point, int min, int max) : _ref(std::move(ref_point)), EntitySelect(min, max) {}
+	EntityDestSelect(Point&& ref_point, const std::initializer_list<int>& values) : _ref(std::move(ref_point)), EntitySelect(values) {}
+	EntityDestSelect(Point&& ref_point, std::initializer_list<int>&& values) : _ref(std::move(ref_point)), EntitySelect(std::move(values)) {}
+	virtual	int				selected_value(const Entity& e) const { return e.dst.dist(_ref); }
+private:
+	const Point				_ref;
+};
+
 class EntityAngleSelect : public EntitySelect		// Unnary predicate selecting entities on an angle to a given reference vector.
 {
 public:
@@ -398,6 +434,14 @@ private:
 	static Entity*	_get_entity_ptr(const std::multiset<Entity*>::iterator& it) { return *it; }
 };
 
+void	wind_entities(const Remap::EntitySet& windport, Vect wind_dir, int* mana)
+{
+	*mana -= 10;
+	for (auto it = windport.begin(); it != windport.end(); ++it)
+		if (!(*it)->shield_life)
+			(*it)->displace(Vect(2200, wind_dir.dir()));
+}
+
 int	main()
 {
 	Player	me;
@@ -434,8 +478,8 @@ int	main()
 		cin >> me; cin.ignore();
 		cin >> adv;	cin.ignore();
 
-		const int	health = me.health;
-		const int	mana = me.mana;
+		int&	health = me.health;
+		int&	mana = me.mana;
 
 		int entity_count; // Amount of heros and monster you can see
 		cin >> entity_count; cin.ignore();
@@ -456,32 +500,38 @@ int	main()
 			}
 		}
 
-		//	Set of monsters and enemies with a distance to base under 10000, and sorted by distance to the base.
-		Remap::EntitySet	baseview(Remap::create_set(EntityDistCompare(base.xy), EntityDistSelect(base.xy, 10000), monsters, enemies));
+		base.posts = {Point(0,0)+Vect(6000, to_rad(15)), Point(0,0)+Vect(6000, to_rad(40)), Point(0,0)+Vect(6000, to_rad(65))};
 
-		//	Viewport of each hero
-		vector<Remap::EntitySet>	heroviews;
-		for (int i = 0; i < heroes.size(); ++i)
-			heroviews.push_back(Remap::create_set(EntityDistCompare(heroes[i].xy), EntityDistSelect(heroes[i].xy, 2200), monsters, enemies));
-
-		auto base_it = baseview.begin();
-
+		///	Hero 0		(Defense)
 		for (int i = 0; i < heroes_per_player; ++i)
 		{
-			// DO YOUR CODE ! :-)
-			while (base_it != baseview.end() && (*base_it)->type == 1)
-				++base_it;
-			if (base_it != baseview.end())
 			{
-				Point p = (*base_it)->xy + (*base_it)->vxy;
-				cout << "MOVE " << p << " kill " << (*base_it)->id << endl;
-				++base_it;
+				auto	base_view(Remap::create_set(EntityDistCompare(base.xy), monsters, enemies));
+				auto	base_threats(Remap::create_set(EntityDestCompare(base.xy), EntityDestSelect(base.xy, 5500), base_view));
+				auto	viewport(Remap::create_set(EntityDistCompare(heroes[i].xy), EntityDistSelect(heroes[i].xy, 2200), base_view));
+				auto	windport(Remap::create_set(EntityDistCompare(heroes[i].xy), EntityDistSelect(heroes[i].xy, 1280), viewport));
+				auto	view_threats(Remap::create_set(EntityDistCompare(base.xy), EntityMemberSelect("threat_for", {1}), viewport));
+				cerr << "view[" << i << "] : " << viewport.size() << endl;
+				if (windport.size() >= 2 && mana >= 10 && Remap::create_set(EntityDistCompare(base.xy), EntityDistSelect(heroes[i].xy, 6000), windport).size())
+				{
+					Vect	dir = Vect(base.xy, heroes[i].xy).normalize();
+					cout << "SPELL WIND " << heroes[i].xy + dir << " URG" << endl;
+					wind_entities(windport, dir, &mana);
+					continue;
+				}
+				if (base_threats.size())
+				{
+					cout << "MOVE " << (*base_threats.begin())->dst << " kill " << i << endl;
+					continue;
+				}
+				if (mana >= 70 && view_threats.size())
+				{
+					cout << "SPELL CONTROL " << (*view_threats.begin())->id << " " << base.adv << " wololo"<< endl;
+					continue;
+				}
+				cout << "MOVE " << base.get_post(i) << " post " << i << endl;
+				continue;
 			}
-			else
-			{
-				cout << "MOVE " << Point(0, 0) + Vect(7000, to_rad(22.5 * (i+1))) << " post " << i << endl;
-			}
-
 		}
 
 		cerr << "Turn exec_time (in clock ticks) : " << clock() - clk_loop_start << endl;
